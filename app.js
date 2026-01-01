@@ -1,58 +1,50 @@
 const express = require('express');
 const { Sequelize, DataTypes } = require('sequelize');
-const pg = require('pg');
+const pg = require('pg'); // استدعاء يدوي للمكتبة
 const path = require('path');
 const bodyParser = require('body-parser');
 const session = require('express-session');
 
 const app = express();
 
-// --- 1. إعدادات قاعدة البيانات (الحل النهائي لمشكلة pg) ---
+// --- إعداد الاتصال بـ Supabase ---
 const sequelize = new Sequelize(process.env.DATABASE_URL, {
     dialect: 'postgres',
-    dialectModule: pg, // حل مشكلة "Please install pg package manually"
+    dialectModule: pg, // حل مشكلة الـ Manual Install
     dialectOptions: {
         ssl: {
             require: true,
-            rejectUnauthorized: false // ضروري جداً للاتصال بـ Supabase
+            rejectUnauthorized: false
         }
     },
-    logging: false // لتقليل الزحمة في الـ Logs
+    logging: false
 });
 
-// --- 2. تعريف الموديل (User) ---
+// --- تعريف الموديل ---
 const User = sequelize.define('User', {
     username: { type: DataTypes.STRING, allowNull: false, unique: true },
     password: { type: DataTypes.STRING, allowNull: false }
 });
 
-// --- 3. الإعدادات الوسيطة (Middleware) ---
+// --- الإعدادات (Middleware) ---
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({
-    secret: 'smart-planner-secret',
+    secret: 'secret-key-2026',
     resave: false,
     saveUninitialized: true
 }));
 
-// مزامنة قاعدة البيانات
+// مزامنة قاعدة البيانات تلقائياً
 sequelize.sync();
 
-// --- 4. المسارات (Routes) ---
+// --- المسارات (Routes) ---
+app.get('/', (req, res) => res.redirect('/login'));
 
-// الصفحة الرئيسية (تحويل للوجين)
-app.get('/', (req, res) => {
-    res.redirect('/login');
-});
+app.get('/login', (req, res) => res.render('login', { error: null }));
 
-// صفحة تسجيل الدخول
-app.get('/login', (req, res) => {
-    res.render('login', { error: null });
-});
-
-// معالجة الدخول
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
     try {
@@ -61,30 +53,17 @@ app.post('/login', async (req, res) => {
             req.session.userId = user.id;
             return res.redirect('/months');
         }
-        res.render('login', { error: 'بيانات غير صحيحة' });
+        res.render('login', { error: 'بيانات الدخول غير صحيحة' });
     } catch (err) {
         console.error(err);
-        res.render('login', { error: 'حدث خطأ في السيرفر' });
+        res.render('login', { error: 'عذراً، فشل الاتصال بقاعدة البيانات' });
     }
 });
 
-// صفحة الشهور (مثال)
 app.get('/months', (req, res) => {
     if (!req.session.userId) return res.redirect('/login');
     res.render('months');
 });
 
-// تسجيل الخروج
-app.get('/logout', (req, res) => {
-    req.session.destroy();
-    res.redirect('/login');
-});
-
-// --- 5. التصدير لـ Vercel (مهم جداً) ---
+// --- التصدير لـ Vercel ---
 module.exports = app;
-
-// للتشغيل المحلي فقط
-if (process.env.NODE_ENV !== 'production') {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
-}
