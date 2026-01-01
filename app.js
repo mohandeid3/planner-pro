@@ -1,3 +1,4 @@
+const pg = require('pg');
 const express = require('express');
 const { Sequelize, DataTypes } = require('sequelize');
 const bodyParser = require('body-parser');
@@ -149,6 +150,7 @@ app.post('/toggle/:id', auth, async (req, res) => {
 
 // --- تشغيل السيرفر ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+module.exports = app;
+
 
 module.exports = app; // ضروري جداً لعمل المشروع على Vercel
