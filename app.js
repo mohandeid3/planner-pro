@@ -1,156 +1,90 @@
-const pg = require('pg');
 const express = require('express');
 const { Sequelize, DataTypes } = require('sequelize');
+const pg = require('pg');
+const path = require('path');
 const bodyParser = require('body-parser');
 const session = require('express-session');
-const path = require('path');
 
 const app = express();
 
-// --- إعداد قاعدة البيانات ---
-// الرابط سيتم سحبه من Environment Variables في Vercel
-const dbUrl = process.env.DATABASE_URL; 
-
-const sequelize = new Sequelize(dbUrl, {
+// --- 1. إعدادات قاعدة البيانات (الحل النهائي لمشكلة pg) ---
+const sequelize = new Sequelize(process.env.DATABASE_URL, {
     dialect: 'postgres',
-    logging: false,
+    dialectModule: pg, // حل مشكلة "Please install pg package manually"
     dialectOptions: {
         ssl: {
             require: true,
-            rejectUnauthorized: false // ضروري للاتصال بـ Supabase من Vercel
+            rejectUnauthorized: false // ضروري جداً للاتصال بـ Supabase
         }
-    }
+    },
+    logging: false // لتقليل الزحمة في الـ Logs
 });
 
-// --- تعريف الجداول (Models) ---
+// --- 2. تعريف الموديل (User) ---
 const User = sequelize.define('User', {
-    username: { type: DataTypes.STRING, unique: true, allowNull: false },
+    username: { type: DataTypes.STRING, allowNull: false, unique: true },
     password: { type: DataTypes.STRING, allowNull: false }
 });
 
-const Task = sequelize.define('Task', {
-    text: DataTypes.STRING,
-    completed: { type: DataTypes.BOOLEAN, defaultValue: false },
-    day: DataTypes.STRING,
-    weekInMonth: DataTypes.INTEGER,
-    month: DataTypes.INTEGER,
-    UserId: DataTypes.INTEGER
-});
-
-const Note = sequelize.define('Note', {
-    content: { type: DataTypes.TEXT, defaultValue: "" },
-    category: DataTypes.STRING,
-    monthId: { type: DataTypes.INTEGER, defaultValue: -1 },
-    weekId: { type: DataTypes.INTEGER, defaultValue: -1 },
-    UserId: DataTypes.INTEGER
-});
-
-// مزامنة الجداول مع قاعدة البيانات
-sequelize.sync();
-
-// --- الإعدادات (Middleware) ---
+// --- 3. الإعدادات الوسيطة (Middleware) ---
 app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views')); // ضمان قراءة المجلد في Vercel
+app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({
-    secret: 'planner_secret_2026',
+    secret: 'smart-planner-secret',
     resave: false,
-    saveUninitialized: false
+    saveUninitialized: true
 }));
 
-// دالة حماية المسارات (لابد من تسجيل الدخول)
-function auth(req, res, next) {
-    if (!req.session.userId) return res.redirect('/login');
-    next();
-}
+// مزامنة قاعدة البيانات
+sequelize.sync();
 
-const monthsNames = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+// --- 4. المسارات (Routes) ---
 
-// --- المسارات (Routes) ---
-
-app.get('/login', (req, res) => res.render('login', { error: null }));
-app.get('/register', (req, res) => res.render('register', { error: null }));
-
-app.post('/register', async (req, res) => {
-    try {
-        const user = await User.create(req.body);
-        req.session.userId = user.id;
-        res.redirect('/');
-    } catch (e) { res.render('register', { error: "الاسم موجود بالفعل" }); }
+// الصفحة الرئيسية (تحويل للوجين)
+app.get('/', (req, res) => {
+    res.redirect('/login');
 });
 
+// صفحة تسجيل الدخول
+app.get('/login', (req, res) => {
+    res.render('login', { error: null });
+});
+
+// معالجة الدخول
 app.post('/login', async (req, res) => {
-    const user = await User.findOne({ where: { username: req.body.username, password: req.body.password } });
-    if (user) {
-        req.session.userId = user.id;
-        res.redirect('/');
-    } else { res.render('login', { error: "بيانات خاطئة" }); }
+    const { username, password } = req.body;
+    try {
+        const user = await User.findOne({ where: { username, password } });
+        if (user) {
+            req.session.userId = user.id;
+            return res.redirect('/months');
+        }
+        res.render('login', { error: 'بيانات غير صحيحة' });
+    } catch (err) {
+        console.error(err);
+        res.render('login', { error: 'حدث خطأ في السيرفر' });
+    }
 });
 
+// صفحة الشهور (مثال)
+app.get('/months', (req, res) => {
+    if (!req.session.userId) return res.redirect('/login');
+    res.render('months');
+});
+
+// تسجيل الخروج
 app.get('/logout', (req, res) => {
     req.session.destroy();
     res.redirect('/login');
 });
 
-// الصفحة الرئيسية - حل مشكلة note is not defined
-app.get('/', auth, async (req, res) => {
-    const note = await Note.findOne({ where: { category: 'main', UserId: req.session.userId } });
-    res.render('months', { monthsNames, note: note ? note.content : "" });
-});
-
-app.get('/month/:mId', auth, async (req, res) => {
-    const mId = parseInt(req.params.mId);
-    let weeksStats = [];
-    for (let w = 1; w <= 5; w++) {
-        const total = await Task.count({ where: { month: mId, weekInMonth: w, UserId: req.session.userId } });
-        const done = await Task.count({ where: { month: mId, weekInMonth: w, completed: true, UserId: req.session.userId } });
-        weeksStats.push({ id: w, progress: total > 0 ? Math.round((done / total) * 100) : 0 });
-    }
-    const note = await Note.findOne({ where: { category: 'month', monthId: mId, UserId: req.session.userId } });
-    res.render('weeks', { mId, mName: monthsNames[mId], weeksStats, note: note ? note.content : "" });
-});
-
-app.get('/month/:mId/week/:wId', auth, async (req, res) => {
-    const { mId, wId } = req.params;
-    const daysNames = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    const tasks = await Task.findAll({ where: { month: mId, weekInMonth: wId, UserId: req.session.userId } });
-    const note = await Note.findOne({ where: { category: 'week', monthId: mId, weekId: wId, UserId: req.session.userId } });
-    
-    let startDayOffset = (parseInt(wId) - 1) * 7;
-    let daysWithDates = daysNames.map((name, index) => {
-        let date = new Date(2026, mId, 1 + startDayOffset + index);
-        return { name, dateStr: `${date.getDate()}/${date.getMonth() + 1}` };
-    });
-
-    res.render('tasks', { mId, wId, mName: monthsNames[mId], daysWithDates, tasks, note: note ? note.content : "" });
-});
-
-app.post('/save-note', auth, async (req, res) => {
-    const { content, category, monthId, weekId } = req.body;
-    let where = { category, UserId: req.session.userId };
-    if (monthId && monthId != -1) where.monthId = monthId;
-    if (weekId && weekId != -1) where.weekId = weekId;
-
-    const [note, created] = await Note.findOrCreate({ where, defaults: { content, UserId: req.session.userId } });
-    if (!created) { note.content = content; await note.save(); }
-    res.redirect('back');
-});
-
-app.post('/add', auth, async (req, res) => {
-    await Task.create({ ...req.body, UserId: req.session.userId });
-    res.redirect('back');
-});
-
-app.post('/toggle/:id', auth, async (req, res) => {
-    const task = await Task.findOne({ where: { id: req.params.id, UserId: req.session.userId } });
-    if (task) { task.completed = !task.completed; await task.save(); }
-    res.redirect('back');
-});
-
-// --- تشغيل السيرفر ---
-const PORT = process.env.PORT || 3000;
+// --- 5. التصدير لـ Vercel (مهم جداً) ---
 module.exports = app;
 
-
-module.exports = app; // ضروري جداً لعمل المشروع على Vercel
+// للتشغيل المحلي فقط
+if (process.env.NODE_ENV !== 'production') {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+}
